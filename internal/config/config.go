@@ -100,6 +100,18 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(svc.Name) == "" {
 			return fmt.Errorf("service[%d].name cannot be empty", i)
 		}
+		if len(svc.Routes) == 0 {
+			return fmt.Errorf("service %q must have at least one route", svc.Name)
+		}
+		for j, r := range svc.Routes {
+			p := strings.TrimSpace(r.Path)
+			if p == "" {
+				return fmt.Errorf("service %q route[%d].path cannot be empty", svc.Name, j)
+			}
+			if !strings.HasPrefix(p, "/") {
+				return fmt.Errorf("service %q route[%d].path %q must start with '/'", svc.Name, j, p)
+			}
+		}
 		if len(svc.Upstreams) == 0 {
 			return fmt.Errorf("service %q must have at least one upstream", svc.Name)
 		}

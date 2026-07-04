@@ -19,6 +19,9 @@ observability:
     level: debug
 services:
   - name: test-service
+    routes:
+      - path: /test/*
+        strip_prefix: true
     upstreams:
       - url: http://localhost:8081
 `
@@ -55,6 +58,15 @@ services:
 	if cfg.Services[0].Name != "test-service" {
 		t.Errorf("expected service name test-service, got %s", cfg.Services[0].Name)
 	}
+	if len(cfg.Services[0].Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(cfg.Services[0].Routes))
+	}
+	if cfg.Services[0].Routes[0].Path != "/test/*" {
+		t.Errorf("expected route path /test/*, got %s", cfg.Services[0].Routes[0].Path)
+	}
+	if !cfg.Services[0].Routes[0].StripPrefix {
+		t.Errorf("expected strip_prefix true, got %t", cfg.Services[0].Routes[0].StripPrefix)
+	}
 	if len(cfg.Services[0].Upstreams) != 1 {
 		t.Fatalf("expected 1 upstream, got %d", len(cfg.Services[0].Upstreams))
 	}
@@ -67,6 +79,9 @@ func TestConfigValidateErrors(t *testing.T) {
 	validServices := []ServiceConfig{
 		{
 			Name: "test-service",
+			Routes: []RouteConfig{
+				{Path: "/test/*", StripPrefix: true},
+			},
 			Upstreams: []UpstreamConfig{
 				{URL: "http://localhost:8081"},
 			},
@@ -173,6 +188,9 @@ func TestConfigValidateErrors(t *testing.T) {
 				Services: []ServiceConfig{
 					{
 						Name: "",
+						Routes: []RouteConfig{
+							{Path: "/test"},
+						},
 						Upstreams: []UpstreamConfig{
 							{URL: "http://localhost:8081"},
 						},
@@ -192,7 +210,10 @@ func TestConfigValidateErrors(t *testing.T) {
 				},
 				Services: []ServiceConfig{
 					{
-						Name:      "test-service",
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test"},
+						},
 						Upstreams: nil,
 					},
 				},
@@ -211,9 +232,73 @@ func TestConfigValidateErrors(t *testing.T) {
 				Services: []ServiceConfig{
 					{
 						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test"},
+						},
 						Upstreams: []UpstreamConfig{
 							{URL: "ftp://localhost:8081"},
 						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing service routes",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name:      "test-service",
+						Routes:    nil,
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty route path",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: ""},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "route path not starting with slash",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
 					},
 				},
 			},

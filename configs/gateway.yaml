@@ -9,6 +9,16 @@ observability:
     level: info
 
 services:
-  - name: test-service
+  - name: catalog-service
+    routes:
+      - path: /catalog/*
+        strip_prefix: true
     upstreams:
       - url: http://localhost:8081
+
+  - name: order-service
+    routes:
+      - path: /orders/*
+        strip_prefix: true
+    upstreams:
+      - url: http://localhost:8082

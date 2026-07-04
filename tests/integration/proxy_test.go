@@ -50,6 +50,9 @@ func TestProxyIntegration(t *testing.T) {
 		Services: []config.ServiceConfig{
 			{
 				Name: "test-service",
+				Routes: []config.RouteConfig{
+					{Path: "/*", StripPrefix: false},
+				},
 				Upstreams: []config.UpstreamConfig{
 					{URL: backend.URL},
 				},
