@@ -7,3 +7,8 @@ gateway:
 observability:
   logging:
     level: info
+
+services:
+  - name: test-service
+    upstreams:
+      - url: http://localhost:8081

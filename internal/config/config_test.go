@@ -17,6 +17,10 @@ gateway:
 observability:
   logging:
     level: debug
+services:
+  - name: test-service
+    upstreams:
+      - url: http://localhost:8081
 `
 	tmpfile, err := os.CreateTemp("", "gateway-config-*.yaml")
 	if err != nil {
@@ -45,9 +49,30 @@ observability:
 	if cfg.Observability.Logging.Level != "debug" {
 		t.Errorf("expected level debug, got %s", cfg.Observability.Logging.Level)
 	}
+	if len(cfg.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(cfg.Services))
+	}
+	if cfg.Services[0].Name != "test-service" {
+		t.Errorf("expected service name test-service, got %s", cfg.Services[0].Name)
+	}
+	if len(cfg.Services[0].Upstreams) != 1 {
+		t.Fatalf("expected 1 upstream, got %d", len(cfg.Services[0].Upstreams))
+	}
+	if cfg.Services[0].Upstreams[0].URL != "http://localhost:8081" {
+		t.Errorf("expected upstream url http://localhost:8081, got %s", cfg.Services[0].Upstreams[0].URL)
+	}
 }
 
 func TestConfigValidateErrors(t *testing.T) {
+	validServices := []ServiceConfig{
+		{
+			Name: "test-service",
+			Upstreams: []UpstreamConfig{
+				{URL: "http://localhost:8081"},
+			},
+		},
+	}
+
 	tests := []struct {
 		name    string
 		cfg     Config
@@ -62,6 +87,7 @@ func TestConfigValidateErrors(t *testing.T) {
 					WriteTimeout: time.Second,
 					IdleTimeout:  time.Second,
 				},
+				Services: validServices,
 			},
 			wantErr: false,
 		},
@@ -74,6 +100,7 @@ func TestConfigValidateErrors(t *testing.T) {
 					WriteTimeout: time.Second,
 					IdleTimeout:  time.Second,
 				},
+				Services: validServices,
 			},
 			wantErr: true,
 		},
@@ -86,6 +113,7 @@ func TestConfigValidateErrors(t *testing.T) {
 					WriteTimeout: time.Second,
 					IdleTimeout:  time.Second,
 				},
+				Services: validServices,
 			},
 			wantErr: true,
 		},
@@ -98,6 +126,7 @@ func TestConfigValidateErrors(t *testing.T) {
 					WriteTimeout: time.Second,
 					IdleTimeout:  time.Second,
 				},
+				Services: validServices,
 			},
 			wantErr: true,
 		},
@@ -113,6 +142,78 @@ func TestConfigValidateErrors(t *testing.T) {
 				Observability: ObservabilityConfig{
 					Logging: LoggingConfig{
 						Level: "invalid-level",
+					},
+				},
+				Services: validServices,
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing services",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: nil,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty service name",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "",
+						Upstreams: []UpstreamConfig{
+							{URL: "http://localhost:8081"},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing upstreams",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name:      "test-service",
+						Upstreams: nil,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid upstream url scheme",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Upstreams: []UpstreamConfig{
+							{URL: "ftp://localhost:8081"},
+						},
 					},
 				},
 			},

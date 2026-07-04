@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 type Config struct {
 	Gateway       GatewayConfig       `yaml:"gateway"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	Services      []ServiceConfig     `yaml:"services"`
 }
 
 type GatewayConfig struct {
@@ -27,6 +29,22 @@ type ObservabilityConfig struct {
 
 type LoggingConfig struct {
 	Level string `yaml:"level"`
+}
+
+type ServiceConfig struct {
+	Name         string           `yaml:"name"`
+	LoadBalancer string           `yaml:"load_balancer,omitempty"`
+	Routes       []RouteConfig    `yaml:"routes,omitempty"`
+	Upstreams    []UpstreamConfig `yaml:"upstreams"`
+}
+
+type RouteConfig struct {
+	Path        string `yaml:"path"`
+	StripPrefix bool   `yaml:"strip_prefix"`
+}
+
+type UpstreamConfig struct {
+	URL string `yaml:"url"`
 }
 
 
@@ -71,6 +89,34 @@ func (c *Config) Validate() error {
 		lvl := strings.ToLower(strings.TrimSpace(c.Observability.Logging.Level))
 		if lvl != "debug" && lvl != "info" && lvl != "warn" && lvl != "warning" && lvl != "error" {
 			return fmt.Errorf("invalid logging level: %s", c.Observability.Logging.Level)
+		}
+	}
+
+	if len(c.Services) == 0 {
+		return fmt.Errorf("at least one service must be configured")
+	}
+
+	for i, svc := range c.Services {
+		if strings.TrimSpace(svc.Name) == "" {
+			return fmt.Errorf("service[%d].name cannot be empty", i)
+		}
+		if len(svc.Upstreams) == 0 {
+			return fmt.Errorf("service %q must have at least one upstream", svc.Name)
+		}
+		for j, ups := range svc.Upstreams {
+			if strings.TrimSpace(ups.URL) == "" {
+				return fmt.Errorf("service %q upstream[%d].url cannot be empty", svc.Name, j)
+			}
+			parsed, err := url.Parse(ups.URL)
+			if err != nil {
+				return fmt.Errorf("service %q upstream[%d].url is invalid: %w", svc.Name, j, err)
+			}
+			if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				return fmt.Errorf("service %q upstream[%d].url scheme must be http or https", svc.Name, j)
+			}
+			if parsed.Host == "" {
+				return fmt.Errorf("service %q upstream[%d].url must specify a host", svc.Name, j)
+			}
 		}
 	}
 

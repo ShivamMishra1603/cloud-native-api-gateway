@@ -28,7 +28,11 @@ func main() {
 
 	slog.Info("config loaded successfully", "port", cfg.Gateway.Port)
 
-	srv := server.New(cfg)
+	srv, err := server.New(cfg)
+	if err != nil {
+		slog.Error("failed to initialize server", "error", err)
+		os.Exit(1)
+	}
 
 	go func() {
 		slog.Info("gateway listening", "addr", srv.Addr)
