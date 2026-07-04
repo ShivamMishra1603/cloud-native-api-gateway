@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/logging"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/server"
 )
 
@@ -18,17 +19,24 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
+
+	// Initialize the structured JSON logger
+	logging.Init(cfg.Observability.Logging.Level)
+
+	slog.Info("config loaded successfully", "port", cfg.Gateway.Port)
 
 	srv := server.New(cfg)
 
 	go func() {
-		log.Printf("gateway listening on %s", srv.Addr)
+		slog.Info("gateway listening", "addr", srv.Addr)
 
 		if err := srv.ListenAndServe(); err != nil {
 			if err.Error() != "http: Server closed" {
-				log.Fatalf("server error: %v", err)
+				slog.Error("server error", "error", err)
+				os.Exit(1)
 			}
 		}
 	}()
@@ -37,14 +45,15 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	<-stop
-	log.Println("shutdown signal received")
+	slog.Info("shutdown signal received")
 
 	ctx, cancel := context.WithTimeout(context.Background(), server.ShutdownTimeout())
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("graceful shutdown failed: %v", err)
+		slog.Error("graceful shutdown failed", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("gateway stopped")
+	slog.Info("gateway stopped")
 }

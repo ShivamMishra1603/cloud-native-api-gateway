@@ -3,13 +3,15 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Gateway GatewayConfig `yaml:"gateway"`
+	Gateway       GatewayConfig       `yaml:"gateway"`
+	Observability ObservabilityConfig `yaml:"observability"`
 }
 
 type GatewayConfig struct {
@@ -18,6 +20,15 @@ type GatewayConfig struct {
 	WriteTimeout time.Duration `yaml:"write_timeout"`
 	IdleTimeout  time.Duration `yaml:"idle_timeout"`
 }
+
+type ObservabilityConfig struct {
+	Logging LoggingConfig `yaml:"logging"`
+}
+
+type LoggingConfig struct {
+	Level string `yaml:"level"`
+}
+
 
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -52,6 +63,15 @@ func (c *Config) Validate() error {
 
 	if c.Gateway.IdleTimeout <= 0 {
 		return fmt.Errorf("gateway.idle_timeout must be positive")
+	}
+
+	if c.Observability.Logging.Level == "" {
+		c.Observability.Logging.Level = "info"
+	} else {
+		lvl := strings.ToLower(strings.TrimSpace(c.Observability.Logging.Level))
+		if lvl != "debug" && lvl != "info" && lvl != "warn" && lvl != "warning" && lvl != "error" {
+			return fmt.Errorf("invalid logging level: %s", c.Observability.Logging.Level)
+		}
 	}
 
 	return nil

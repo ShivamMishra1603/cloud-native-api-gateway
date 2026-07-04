@@ -3,3 +3,7 @@ gateway:
   read_timeout: 10s
   write_timeout: 10s
   idle_timeout: 60s
+
+observability:
+  logging:
+    level: info
