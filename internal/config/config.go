@@ -16,6 +16,7 @@ type Config struct {
 	Services       []ServiceConfig      `yaml:"services"`
 	HealthCheck    HealthCheckConfig    `yaml:"health_checks"`
 	Authentication AuthenticationConfig `yaml:"authentication"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
 }
 
 type GatewayConfig struct {
@@ -63,12 +64,20 @@ type APIKeyRecord struct {
 	Consumer string `yaml:"consumer"`
 }
 
+type RateLimitConfig struct {
+	Enabled           bool    `yaml:"enabled"`
+	KeyBy             string  `yaml:"key_by"` // "ip" or "consumer"
+	RequestsPerSecond float64 `yaml:"requests_per_second"`
+	Burst             int     `yaml:"burst"`
+}
+
 type ServiceConfig struct {
 	Name         string           `yaml:"name"`
 	LoadBalancer string           `yaml:"load_balancer,omitempty"`
 	Routes       []RouteConfig    `yaml:"routes,omitempty"`
 	Upstreams    []UpstreamConfig `yaml:"upstreams"`
 	Auth         AuthConfig       `yaml:"auth,omitempty"`
+	RateLimit    RateLimitConfig  `yaml:"rate_limit,omitempty"`
 }
 
 type AuthConfig struct {
@@ -240,5 +249,31 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate Rate Limit Configurations
+	if err := validateRateLimit(c.RateLimit, "rate_limit"); err != nil {
+		return err
+	}
+	for _, svc := range c.Services {
+		if err := validateRateLimit(svc.RateLimit, fmt.Sprintf("service %q.rate_limit", svc.Name)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateRateLimit(rl RateLimitConfig, prefix string) error {
+	if rl.Enabled {
+		k := strings.ToLower(strings.TrimSpace(rl.KeyBy))
+		if k != "" && k != "ip" && k != "consumer" {
+			return fmt.Errorf("%s.key_by must be 'ip' or 'consumer'", prefix)
+		}
+		if rl.RequestsPerSecond <= 0 {
+			return fmt.Errorf("%s.requests_per_second must be positive", prefix)
+		}
+		if rl.Burst <= 0 {
+			return fmt.Errorf("%s.burst must be positive", prefix)
+		}
+	}
 	return nil
 }

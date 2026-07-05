@@ -74,12 +74,12 @@ func (u *Upstream) ReportSuccess(threshold int) bool {
 	return false
 }
 
-// Service represents a logical backend service holding a list of upstream replicas.
 type Service struct {
 	Name         string
 	Upstreams    []*Upstream
 	LoadBalancer string
 	Auth         Auth // Service-level authentication policy
+	RateLimit    config.RateLimitConfig
 }
 
 type Auth struct {
@@ -123,6 +123,7 @@ func New(cfg *config.Config) (*Registry, error) {
 				Type:             svc.Auth.Type,
 				AllowedConsumers: svc.Auth.AllowedConsumers,
 			},
+			RateLimit: svc.RateLimit,
 		}
 	}
 

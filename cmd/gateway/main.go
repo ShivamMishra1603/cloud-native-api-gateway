@@ -37,19 +37,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup runtime context for background loops (health checks, rate limits)
+	runtimeCtx, cancelRuntime := context.WithCancel(context.Background())
+	defer cancelRuntime()
+
 	// Initialize the HTTP Server
-	srv, err := server.New(cfg, reg)
+	srv, err := server.New(runtimeCtx, cfg, reg)
 	if err != nil {
 		slog.Error("failed to initialize server", "error", err)
 		os.Exit(1)
 	}
 
 	// Start Health Checker background tasks
-	healthCtx, cancelHealth := context.WithCancel(context.Background())
-	defer cancelHealth()
-
 	checker := health.NewChecker(cfg.HealthCheck, reg)
-	go checker.Start(healthCtx)
+	go checker.Start(runtimeCtx)
 
 	go func() {
 		slog.Info("gateway listening", "addr", srv.Addr)
@@ -69,7 +70,7 @@ func main() {
 	slog.Info("shutdown signal received")
 
 	// Terminate health check workers
-	cancelHealth()
+	cancelRuntime()
 
 	ctx, cancel := context.WithTimeout(context.Background(), server.ShutdownTimeout())
 	defer cancel()

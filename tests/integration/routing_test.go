@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,7 +70,7 @@ func TestRoutingIntegration(t *testing.T) {
 	}
 
 	// 4. Start the API Gateway
-	gwSrv, err := server.New(cfg, reg)
+	gwSrv, err := server.New(context.Background(), cfg, reg)
 	if err != nil {
 		t.Fatalf("failed to initialize gateway server: %v", err)
 	}

@@ -73,7 +73,7 @@ func TestHealthCheckIntegration(t *testing.T) {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	gwSrv, err := server.New(cfg, reg)
+	gwSrv, err := server.New(context.Background(), cfg, reg)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -16,11 +18,12 @@ import (
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/loadbalancer"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/proxy"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/ratelimit"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/router"
 )
 
-func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
+func New(ctx context.Context, cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 	mux := http.NewServeMux()
 
 	// Internal health check endpoint
@@ -56,6 +59,19 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 			}
 		}
 		jwtPublicKey = pubKey
+	}
+
+	// Initialize global and service rate limiters
+	var globalLimiter *ratelimit.Limiter
+	if cfg.RateLimit.Enabled {
+		globalLimiter = ratelimit.NewLimiter(ctx, cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.Burst)
+	}
+
+	serviceLimiters := make(map[string]*ratelimit.Limiter)
+	for _, svc := range cfg.Services {
+		if svc.RateLimit.Enabled {
+			serviceLimiters[svc.Name] = ratelimit.NewLimiter(ctx, svc.RateLimit.RequestsPerSecond, svc.RateLimit.Burst)
+		}
 	}
 
 	// Build a map of service name -> proxy handler
@@ -108,6 +124,8 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 			return
 		}
 
+		var consumer string
+
 		// Apply API Key or JWT Authentication if enabled for this service
 		if regSvc.Auth.Enabled {
 			authType := strings.ToLower(strings.TrimSpace(regSvc.Auth.Type))
@@ -115,7 +133,6 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 				authType = "api_key"
 			}
 
-			var consumer string
 			var authenticated bool
 
 			if authType == "api_key" {
@@ -215,6 +232,50 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 
 			// Propagate consumer identification header to downstream upstreams
 			req.Header.Set("X-Consumer", consumer)
+		}
+
+		// Apply Rate Limiting
+		var keyBy string
+		if regSvc.RateLimit.Enabled {
+			keyBy = strings.ToLower(strings.TrimSpace(regSvc.RateLimit.KeyBy))
+		} else if cfg.RateLimit.Enabled {
+			keyBy = strings.ToLower(strings.TrimSpace(cfg.RateLimit.KeyBy))
+		}
+		if keyBy == "" {
+			keyBy = "ip"
+		}
+
+		clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			clientIP = req.RemoteAddr
+		}
+
+		var rlKey string
+		if keyBy == "consumer" && consumer != "" {
+			rlKey = consumer
+		} else {
+			rlKey = clientIP
+		}
+
+		// Check service-level rate limit
+		if regSvc.RateLimit.Enabled {
+			sLimiter, ok := serviceLimiters[regSvc.Name]
+			if ok && sLimiter != nil {
+				if !sLimiter.Allow(rlKey) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte("429 Too Many Requests - Service rate limit exceeded\n"))
+					return
+				}
+			}
+		} else if cfg.RateLimit.Enabled {
+			// Check global rate limit
+			if globalLimiter != nil {
+				if !globalLimiter.Allow(rlKey) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte("429 Too Many Requests - Global rate limit exceeded\n"))
+					return
+				}
+			}
 		}
 
 		// Strip prefix if required

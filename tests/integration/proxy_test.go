@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,7 @@ func TestProxyIntegration(t *testing.T) {
 	}
 
 	// 3. Start the API Gateway on a test listener
-	gwSrv, err := server.New(cfg, reg)
+	gwSrv, err := server.New(context.Background(), cfg, reg)
 	if err != nil {
 		t.Fatalf("failed to initialize gateway server: %v", err)
 	}

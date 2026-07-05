@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -129,7 +130,7 @@ func TestAuthenticationIntegration(t *testing.T) {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	gwSrv, err := server.New(cfg, reg)
+	gwSrv, err := server.New(context.Background(), cfg, reg)
 	if err != nil {
 		t.Fatalf("failed to initialize gateway server: %v", err)
 	}

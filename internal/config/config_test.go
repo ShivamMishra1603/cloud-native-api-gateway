@@ -441,6 +441,59 @@ func TestConfigValidateErrors(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "global rate limit enabled with non-positive rps",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				RateLimit: RateLimitConfig{
+					Enabled:           true,
+					RequestsPerSecond: 0,
+					Burst:             10,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "global rate limit enabled with invalid key_by",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				RateLimit: RateLimitConfig{
+					Enabled:           true,
+					KeyBy:             "invalid-key-by",
+					RequestsPerSecond: 10,
+					Burst:             10,
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
