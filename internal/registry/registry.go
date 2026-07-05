@@ -143,6 +143,13 @@ func (u *Upstream) RecordResult(success bool, cbCfg config.CircuitBreakerConfig)
 	}
 }
 
+// CircuitBreakerState returns the current circuit breaker state (0=closed, 1=open, 2=half-open).
+func (u *Upstream) CircuitBreakerState() int {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return int(u.cbState)
+}
+
 // DecrementHalfOpen decreases the active trial request counter if we remain in Half-Open.
 func (u *Upstream) DecrementHalfOpen() {
 	u.mu.Lock()

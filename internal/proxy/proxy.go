@@ -13,6 +13,7 @@ import (
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/loadbalancer"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/metrics"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 )
 
@@ -33,7 +34,7 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 		Director: func(req *http.Request) {
 			upstream, ok := req.Context().Value(selectedUpstreamKey{}).(*registry.Upstream)
 			if !ok {
-				slog.Error("failed to extract upstream from context in proxy Director")
+				slog.ErrorContext(req.Context(), "failed to extract upstream from context in proxy Director")
 				return
 			}
 
@@ -61,7 +62,7 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 				req.Header.Set("X-Forwarded-For", clientIP)
 			}
 
-			slog.Debug("request proxied",
+			slog.DebugContext(req.Context(), "request proxied",
 				"service", serviceName,
 				"method", req.Method,
 				"path", req.URL.Path,
@@ -71,7 +72,7 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 			)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			slog.Error("upstream connection error",
+			slog.ErrorContext(r.Context(), "upstream connection error",
 				"error", err,
 				"service", serviceName,
 				"path", r.URL.Path,
@@ -155,7 +156,7 @@ func (p *ProxyHandler) prepareRequest(req *http.Request, upstream *registry.Upst
 func (p *ProxyHandler) executeStream(w http.ResponseWriter, req *http.Request) {
 	eligible := p.filterEligible()
 	if len(eligible) == 0 {
-		slog.Error("no eligible upstreams available for service", "service", p.serviceName)
+		slog.ErrorContext(req.Context(), "no eligible upstreams available for service", "service", p.serviceName)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
 		return
@@ -163,7 +164,7 @@ func (p *ProxyHandler) executeStream(w http.ResponseWriter, req *http.Request) {
 
 	upstream, err := p.selectUpstream(eligible)
 	if err != nil {
-		slog.Error("load balancer selection failed", "service", p.serviceName, "error", err)
+		slog.ErrorContext(req.Context(), "load balancer selection failed", "service", p.serviceName, "error", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
 		return
@@ -177,8 +178,11 @@ func (p *ProxyHandler) executeStream(w http.ResponseWriter, req *http.Request) {
 		defer cancel()
 	}
 
+	upstreamStart := time.Now()
 	tracker := &statusTrackingWriter{ResponseWriter: w}
 	p.proxy.ServeHTTP(tracker, attemptReq)
+
+	metrics.UpstreamDuration.WithLabelValues(p.serviceName, upstream.URL.String()).Observe(time.Since(upstreamStart).Seconds())
 
 	// Determine result success
 	success := true
@@ -192,6 +196,7 @@ func (p *ProxyHandler) executeStream(w http.ResponseWriter, req *http.Request) {
 	} else {
 		upstream.RecordResult(success, p.resiliency.CircuitBreaker)
 	}
+	metrics.CircuitBreakerState.WithLabelValues(p.serviceName, upstream.URL.String()).Set(float64(upstream.CircuitBreakerState()))
 }
 
 func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http.Request, maxAttempts int, bodyBytes []byte) {
@@ -200,7 +205,7 @@ func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		eligible := p.filterEligible()
 		if len(eligible) == 0 {
-			slog.Error("no eligible upstreams available for service", "service", p.serviceName)
+			slog.ErrorContext(req.Context(), "no eligible upstreams available for service", "service", p.serviceName)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
 			return
@@ -208,7 +213,7 @@ func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http
 
 		upstream, err := p.selectUpstream(eligible)
 		if err != nil {
-			slog.Error("load balancer selection failed", "service", p.serviceName, "error", err)
+			slog.ErrorContext(req.Context(), "load balancer selection failed", "service", p.serviceName, "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
 			return
@@ -223,6 +228,7 @@ func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http
 			attemptReq.Body = http.NoBody
 		}
 
+		upstreamStart := time.Now()
 		bufWriter := newBufferingResponseWriter()
 		p.proxy.ServeHTTP(bufWriter, attemptReq)
 
@@ -230,6 +236,7 @@ func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http
 			cancel()
 		}
 
+		metrics.UpstreamDuration.WithLabelValues(p.serviceName, upstream.URL.String()).Observe(time.Since(upstreamStart).Seconds())
 		upstream.Decrement()
 		lastBufWriter = bufWriter
 
@@ -245,12 +252,13 @@ func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http
 		} else {
 			upstream.RecordResult(success, p.resiliency.CircuitBreaker)
 		}
+		metrics.CircuitBreakerState.WithLabelValues(p.serviceName, upstream.URL.String()).Set(float64(upstream.CircuitBreakerState()))
 
 		// Check if we need to retry
 		if attempt < maxAttempts {
 			retryableStatus := isRetryable(bufWriter.code, p.resiliency.Retry.StatusCodes)
 			if retryableStatus {
-				slog.Warn("upstream request failed, retrying",
+				slog.WarnContext(req.Context(), "upstream request failed, retrying",
 					"service", p.serviceName,
 					"attempt", attempt,
 					"max_attempts", maxAttempts,

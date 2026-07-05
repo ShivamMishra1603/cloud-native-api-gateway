@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/gateway"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
@@ -31,6 +33,9 @@ func New(ctx context.Context, cfg *config.Config, reg *registry.Registry) (*http
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+
+	// Mount Prometheus metrics scraping endpoint
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// catch-all catch and pass to core gateway handler
 	mux.Handle("/", gw)

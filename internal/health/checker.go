@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/metrics"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 )
 
@@ -75,6 +76,7 @@ func (c *Checker) checkUpstream(serviceName string, upstream *registry.Upstream)
 	if err != nil {
 		transitioned := upstream.ReportFailure(c.cfg.FailureThreshold)
 		if transitioned {
+			metrics.UpstreamHealthStatus.WithLabelValues(serviceName, upstream.URL.String()).Set(0)
 			slog.Warn("upstream state transition: UNHEALTHY",
 				"service", serviceName,
 				"url", upstream.URL.String(),
@@ -88,6 +90,7 @@ func (c *Checker) checkUpstream(serviceName string, upstream *registry.Upstream)
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		transitioned := upstream.ReportSuccess(c.cfg.SuccessThreshold)
 		if transitioned {
+			metrics.UpstreamHealthStatus.WithLabelValues(serviceName, upstream.URL.String()).Set(1)
 			slog.Info("upstream state transition: HEALTHY (recovered)",
 				"service", serviceName,
 				"url", upstream.URL.String(),
@@ -97,6 +100,7 @@ func (c *Checker) checkUpstream(serviceName string, upstream *registry.Upstream)
 	} else {
 		transitioned := upstream.ReportFailure(c.cfg.FailureThreshold)
 		if transitioned {
+			metrics.UpstreamHealthStatus.WithLabelValues(serviceName, upstream.URL.String()).Set(0)
 			slog.Warn("upstream state transition: UNHEALTHY",
 				"service", serviceName,
 				"url", upstream.URL.String(),
