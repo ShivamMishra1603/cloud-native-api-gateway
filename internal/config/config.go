@@ -100,6 +100,10 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(svc.Name) == "" {
 			return fmt.Errorf("service[%d].name cannot be empty", i)
 		}
+		lb := strings.ToLower(strings.TrimSpace(svc.LoadBalancer))
+		if lb != "" && lb != "round_robin" && lb != "least_connections" {
+			return fmt.Errorf("service %q has invalid load_balancer strategy: %q", svc.Name, svc.LoadBalancer)
+		}
 		if len(svc.Routes) == 0 {
 			return fmt.Errorf("service %q must have at least one route", svc.Name)
 		}

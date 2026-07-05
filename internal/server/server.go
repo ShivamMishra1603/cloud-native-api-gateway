@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/loadbalancer"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/proxy"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/router"
 )
 
@@ -29,17 +31,33 @@ func New(cfg *config.Config) (*http.Server, error) {
 	// Initialize the Router
 	r := router.New(cfg)
 
+	// Initialize the Service Registry
+	reg, err := registry.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create service registry: %w", err)
+	}
+
 	// Build a map of service name -> proxy handler
 	proxies := make(map[string]*proxy.ProxyHandler)
 	for _, svc := range cfg.Services {
-		// Milestone 3 uses the first upstream replica for proxying
-		targetURL := svc.Upstreams[0].URL
-		slog.Info("initializing proxy target", "service", svc.Name, "url", targetURL)
-
-		pHandler, err := proxy.New(targetURL)
-		if err != nil {
-			return nil, fmt.Errorf("create proxy handler for service %q: %w", svc.Name, err)
+		regSvc, ok := reg.GetService(svc.Name)
+		if !ok {
+			return nil, fmt.Errorf("service %q not found in registry", svc.Name)
 		}
+
+		// Instantiate correct load balancer strategy
+		var lb loadbalancer.LoadBalancer
+		strategy := strings.ToLower(strings.TrimSpace(regSvc.LoadBalancer))
+		switch strategy {
+		case "least_connections":
+			lb = loadbalancer.NewLeastConnections()
+			slog.Info("initializing load balancer", "service", svc.Name, "strategy", "least_connections")
+		default:
+			lb = loadbalancer.NewRoundRobin()
+			slog.Info("initializing load balancer", "service", svc.Name, "strategy", "round_robin")
+		}
+
+		pHandler := proxy.New(svc.Name, regSvc.Upstreams, lb)
 		proxies[svc.Name] = pHandler
 	}
 

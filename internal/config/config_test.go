@@ -304,6 +304,28 @@ func TestConfigValidateErrors(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "invalid load balancer strategy",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						LoadBalancer: "invalid-lb",
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
