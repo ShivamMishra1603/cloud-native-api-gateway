@@ -414,18 +414,3 @@ func TestAuthenticationIntegration(t *testing.T) {
 		}
 	})
 }
-
-// bytesContain returns true if sub is found in data.
-func bytesContain(data []byte, sub string) bool {
-	return ioContains(string(data), sub)
-}
-
-func ioContains(str, sub string) bool {
-	// A basic string contains check
-	for i := 0; i <= len(str)-len(sub); i++ {
-		if str[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

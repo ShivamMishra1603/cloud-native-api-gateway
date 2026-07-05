@@ -31,19 +31,18 @@ type ProxyHandler struct {
 func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.LoadBalancer, res config.ResiliencyConfig) *ProxyHandler {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			// Extract selected upstream from context
 			upstream, ok := req.Context().Value(selectedUpstreamKey{}).(*registry.Upstream)
 			if !ok {
 				slog.Error("failed to extract upstream from context in proxy Director")
 				return
 			}
 
-			// Rewrite scheme and host targets
+			// Rewrite target
 			req.URL.Scheme = upstream.URL.Scheme
 			req.URL.Host = upstream.URL.Host
 			req.Host = upstream.URL.Host
 
-			// Merge raw queries correctly
+			// Merge queries
 			targetQuery := upstream.URL.RawQuery
 			if targetQuery == "" || req.URL.RawQuery == "" {
 				req.URL.RawQuery = targetQuery + req.URL.RawQuery
@@ -51,10 +50,10 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 				req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 			}
 
-			// Clean and join URLs
+			// Join path
 			req.URL.Path = singleJoiningSlash(upstream.URL.Path, req.URL.Path)
 
-			// Propagate client IP in X-Forwarded-For header
+			// Propagate IP
 			if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 				if prior, ok := req.Header["X-Forwarded-For"]; ok {
 					clientIP = strings.Join(prior, ", ") + ", " + clientIP
@@ -96,40 +95,110 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 	}
 }
 
-// ServeHTTP selects an upstream, tracks active requests, and forwards using the reverse proxy.
+// ServeHTTP selects an upstream, tracks active requests, and forwards using streaming or buffering.
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Buffer request body if present
-	var bodyBytes []byte
-	if req.Body != nil && req.Body != http.NoBody {
-		var err error
-		bodyBytes, err = io.ReadAll(req.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte("400 Bad Request - Failed to read request body\n"))
-			return
-		}
-		_ = req.Body.Close()
-	}
+	retryEnabled := p.resiliency.Retry.Enabled && isMethodAllowed(req.Method, p.resiliency.Retry.AllowedMethods)
 
-	maxAttempts := 1
-	if p.resiliency.Retry.Enabled {
-		maxAttempts = p.resiliency.Retry.MaxAttempts
+	if retryEnabled {
+		// Read and buffer request body to allow re-submission across retry attempts
+		var bodyBytes []byte
+		if req.Body != nil && req.Body != http.NoBody {
+			var err error
+			bodyBytes, err = io.ReadAll(req.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte("400 Bad Request - Failed to read request body\n"))
+				return
+			}
+			_ = req.Body.Close()
+		}
+
+		maxAttempts := p.resiliency.Retry.MaxAttempts
 		if maxAttempts < 1 {
 			maxAttempts = 1
 		}
+
+		p.executeBufferedWithRetry(w, req, maxAttempts, bodyBytes)
+	} else {
+		// Streaming mode (zero in-memory buffering for response body or headers)
+		p.executeStream(w, req)
+	}
+}
+
+func (p *ProxyHandler) filterEligible() []*registry.Upstream {
+	var eligible []*registry.Upstream
+	for _, u := range p.upstreams {
+		if u.IsEligible(p.resiliency.CircuitBreaker) {
+			eligible = append(eligible, u)
+		}
+	}
+	return eligible
+}
+
+func (p *ProxyHandler) selectUpstream(eligible []*registry.Upstream) (*registry.Upstream, error) {
+	return p.loadBalancer.Select(eligible)
+}
+
+func (p *ProxyHandler) prepareRequest(req *http.Request, upstream *registry.Upstream) (*http.Request, context.CancelFunc) {
+	var cancel context.CancelFunc
+	ctx := req.Context()
+	timeout := p.resiliency.Timeout.RequestTimeout
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
+	ctx = context.WithValue(ctx, selectedUpstreamKey{}, upstream)
+	attemptReq := req.Clone(ctx)
+	return attemptReq, cancel
+}
+
+func (p *ProxyHandler) executeStream(w http.ResponseWriter, req *http.Request) {
+	eligible := p.filterEligible()
+	if len(eligible) == 0 {
+		slog.Error("no eligible upstreams available for service", "service", p.serviceName)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
+		return
+	}
+
+	upstream, err := p.selectUpstream(eligible)
+	if err != nil {
+		slog.Error("load balancer selection failed", "service", p.serviceName, "error", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
+		return
+	}
+
+	upstream.Increment()
+	defer upstream.Decrement()
+
+	attemptReq, cancel := p.prepareRequest(req, upstream)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	tracker := &statusTrackingWriter{ResponseWriter: w}
+	p.proxy.ServeHTTP(tracker, attemptReq)
+
+	// Determine result success
+	success := true
+	if tracker.statusCode >= 500 {
+		success = false
+	}
+
+	// Update Circuit Breaker
+	if req.Context().Err() == context.Canceled {
+		upstream.DecrementHalfOpen()
+	} else {
+		upstream.RecordResult(success, p.resiliency.CircuitBreaker)
+	}
+}
+
+func (p *ProxyHandler) executeBufferedWithRetry(w http.ResponseWriter, req *http.Request, maxAttempts int, bodyBytes []byte) {
 	var lastBufWriter *bufferingResponseWriter
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// 1. Filter upstreams by eligibility (healthy + circuit breaker check)
-		var eligible []*registry.Upstream
-		for _, u := range p.upstreams {
-			if u.IsEligible(p.resiliency.CircuitBreaker) {
-				eligible = append(eligible, u)
-			}
-		}
-
+		eligible := p.filterEligible()
 		if len(eligible) == 0 {
 			slog.Error("no eligible upstreams available for service", "service", p.serviceName)
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -137,8 +206,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// 2. Select the target upstream using the load balancer from eligible ones
-		upstream, err := p.loadBalancer.Select(eligible)
+		upstream, err := p.selectUpstream(eligible)
 		if err != nil {
 			slog.Error("load balancer selection failed", "service", p.serviceName, "error", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -146,27 +214,15 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// 3. Track connection metrics
 		upstream.Increment()
 
-		// 4. Setup timeout context on the request if configured
-		var cancel context.CancelFunc
-		ctx := req.Context()
-		timeout := p.resiliency.Timeout.RequestTimeout
-		if timeout > 0 {
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-		}
-
-		// 5. Inject selected upstream and clone request
-		ctx = context.WithValue(ctx, selectedUpstreamKey{}, upstream)
-		attemptReq := req.Clone(ctx)
+		attemptReq, cancel := p.prepareRequest(req, upstream)
 		if len(bodyBytes) > 0 {
 			attemptReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		} else {
 			attemptReq.Body = http.NoBody
 		}
 
-		// 6. Forward using the reverse proxy to our buffering writer
 		bufWriter := newBufferingResponseWriter()
 		p.proxy.ServeHTTP(bufWriter, attemptReq)
 
@@ -177,13 +233,13 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		upstream.Decrement()
 		lastBufWriter = bufWriter
 
-		// Determine success outcome for the Circuit Breaker
+		// Determine success outcome
 		success := true
 		if isRetryable(bufWriter.code, p.resiliency.Retry.StatusCodes) || bufWriter.code >= 500 {
 			success = false
 		}
 
-		// Record result in circuit breaker
+		// Update Circuit Breaker
 		if req.Context().Err() == context.Canceled {
 			upstream.DecrementHalfOpen()
 		} else {
@@ -193,9 +249,7 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// Check if we need to retry
 		if attempt < maxAttempts {
 			retryableStatus := isRetryable(bufWriter.code, p.resiliency.Retry.StatusCodes)
-			methodAllowed := isMethodAllowed(req.Method, p.resiliency.Retry.AllowedMethods)
-
-			if retryableStatus && methodAllowed {
+			if retryableStatus {
 				slog.Warn("upstream request failed, retrying",
 					"service", p.serviceName,
 					"attempt", attempt,
@@ -236,6 +290,23 @@ func singleJoiningSlash(a, b string) string {
 		return a + "/" + b
 	}
 	return a + b
+}
+
+type statusTrackingWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *statusTrackingWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusTrackingWriter) Write(buf []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusOK
+	}
+	return w.ResponseWriter.Write(buf)
 }
 
 type bufferingResponseWriter struct {
