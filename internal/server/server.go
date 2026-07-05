@@ -94,7 +94,7 @@ func New(ctx context.Context, cfg *config.Config, reg *registry.Registry) (*http
 			slog.Info("initializing load balancer", "service", svc.Name, "strategy", "round_robin")
 		}
 
-		pHandler := proxy.New(svc.Name, regSvc.Upstreams, lb)
+		pHandler := proxy.New(svc.Name, regSvc.Upstreams, lb, regSvc.Resiliency)
 		proxies[svc.Name] = pHandler
 	}
 

@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/loadbalancer"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 )
@@ -19,11 +23,12 @@ type ProxyHandler struct {
 	serviceName  string
 	upstreams    []*registry.Upstream
 	loadBalancer loadbalancer.LoadBalancer
+	resiliency   config.ResiliencyConfig
 	proxy        *httputil.ReverseProxy
 }
 
 // New creates a new ProxyHandler linked to a service's upstream pool and load-balancer strategy.
-func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.LoadBalancer) *ProxyHandler {
+func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.LoadBalancer, res config.ResiliencyConfig) *ProxyHandler {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			// Extract selected upstream from context
@@ -72,6 +77,11 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 				"service", serviceName,
 				"path", r.URL.Path,
 			)
+			if r.Context().Err() == context.DeadlineExceeded || err == context.DeadlineExceeded || strings.Contains(err.Error(), "context deadline exceeded") {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				_, _ = w.Write([]byte("504 Gateway Timeout - Upstream request timed out\n"))
+				return
+			}
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte("502 Bad Gateway - Upstream service is unreachable\n"))
 		},
@@ -81,30 +91,135 @@ func New(serviceName string, upstreams []*registry.Upstream, lb loadbalancer.Loa
 		serviceName:  serviceName,
 		upstreams:    upstreams,
 		loadBalancer: lb,
+		resiliency:   res,
 		proxy:        rp,
 	}
 }
 
 // ServeHTTP selects an upstream, tracks active requests, and forwards using the reverse proxy.
 func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// 1. Select the target upstream using the load balancer
-	upstream, err := p.loadBalancer.Select(p.upstreams)
-	if err != nil {
-		slog.Error("no upstream available for service", "service", p.serviceName, "error", err)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
-		return
+	// Buffer request body if present
+	var bodyBytes []byte
+	if req.Body != nil && req.Body != http.NoBody {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("400 Bad Request - Failed to read request body\n"))
+			return
+		}
+		_ = req.Body.Close()
 	}
 
-	// 2. Track connection metrics
-	upstream.Increment()
-	defer upstream.Decrement()
+	maxAttempts := 1
+	if p.resiliency.Retry.Enabled {
+		maxAttempts = p.resiliency.Retry.MaxAttempts
+		if maxAttempts < 1 {
+			maxAttempts = 1
+		}
+	}
 
-	// 3. Inject selected upstream into request context
-	ctx := context.WithValue(req.Context(), selectedUpstreamKey{}, upstream)
+	var lastBufWriter *bufferingResponseWriter
 
-	// 4. Forward using the reverse proxy
-	p.proxy.ServeHTTP(w, req.WithContext(ctx))
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// 1. Filter upstreams by eligibility (healthy + circuit breaker check)
+		var eligible []*registry.Upstream
+		for _, u := range p.upstreams {
+			if u.IsEligible(p.resiliency.CircuitBreaker) {
+				eligible = append(eligible, u)
+			}
+		}
+
+		if len(eligible) == 0 {
+			slog.Error("no eligible upstreams available for service", "service", p.serviceName)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
+			return
+		}
+
+		// 2. Select the target upstream using the load balancer from eligible ones
+		upstream, err := p.loadBalancer.Select(eligible)
+		if err != nil {
+			slog.Error("load balancer selection failed", "service", p.serviceName, "error", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("503 Service Unavailable - No upstream available\n"))
+			return
+		}
+
+		// 3. Track connection metrics
+		upstream.Increment()
+
+		// 4. Setup timeout context on the request if configured
+		var cancel context.CancelFunc
+		ctx := req.Context()
+		timeout := p.resiliency.Timeout.RequestTimeout
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+		}
+
+		// 5. Inject selected upstream and clone request
+		ctx = context.WithValue(ctx, selectedUpstreamKey{}, upstream)
+		attemptReq := req.Clone(ctx)
+		if len(bodyBytes) > 0 {
+			attemptReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		} else {
+			attemptReq.Body = http.NoBody
+		}
+
+		// 6. Forward using the reverse proxy to our buffering writer
+		bufWriter := newBufferingResponseWriter()
+		p.proxy.ServeHTTP(bufWriter, attemptReq)
+
+		if cancel != nil {
+			cancel()
+		}
+
+		upstream.Decrement()
+		lastBufWriter = bufWriter
+
+		// Determine success outcome for the Circuit Breaker
+		success := true
+		if isRetryable(bufWriter.code, p.resiliency.Retry.StatusCodes) || bufWriter.code >= 500 {
+			success = false
+		}
+
+		// Record result in circuit breaker
+		if req.Context().Err() == context.Canceled {
+			upstream.DecrementHalfOpen()
+		} else {
+			upstream.RecordResult(success, p.resiliency.CircuitBreaker)
+		}
+
+		// Check if we need to retry
+		if attempt < maxAttempts {
+			retryableStatus := isRetryable(bufWriter.code, p.resiliency.Retry.StatusCodes)
+			methodAllowed := isMethodAllowed(req.Method, p.resiliency.Retry.AllowedMethods)
+
+			if retryableStatus && methodAllowed {
+				slog.Warn("upstream request failed, retrying",
+					"service", p.serviceName,
+					"attempt", attempt,
+					"max_attempts", maxAttempts,
+					"status_code", bufWriter.code,
+					"backoff", p.resiliency.Retry.Backoff,
+				)
+				time.Sleep(p.resiliency.Retry.Backoff)
+				continue
+			}
+		}
+		break
+	}
+
+	// Flush the final response buffer to the client
+	if lastBufWriter != nil {
+		for k, vv := range lastBufWriter.header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(lastBufWriter.code)
+		_, _ = w.Write(lastBufWriter.body.Bytes())
+	}
 }
 
 // singleJoiningSlash safely joins target base path and request path.
@@ -121,4 +236,55 @@ func singleJoiningSlash(a, b string) string {
 		return a + "/" + b
 	}
 	return a + b
+}
+
+type bufferingResponseWriter struct {
+	header      http.Header
+	code        int
+	body        *bytes.Buffer
+	wroteHeader bool
+}
+
+func newBufferingResponseWriter() *bufferingResponseWriter {
+	return &bufferingResponseWriter{
+		header: make(http.Header),
+		code:   http.StatusOK,
+		body:   new(bytes.Buffer),
+	}
+}
+
+func (w *bufferingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *bufferingResponseWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.code = code
+		w.wroteHeader = true
+	}
+}
+
+func (w *bufferingResponseWriter) Write(buf []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.body.Write(buf)
+}
+
+func isRetryable(code int, statusCodes []int) bool {
+	for _, sc := range statusCodes {
+		if code == sc {
+			return true
+		}
+	}
+	return false
+}
+
+func isMethodAllowed(method string, allowedMethods []string) bool {
+	for _, m := range allowedMethods {
+		if strings.EqualFold(method, m) {
+			return true
+		}
+	}
+	return false
 }

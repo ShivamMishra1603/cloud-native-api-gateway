@@ -5,8 +5,17 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+)
+
+type CircuitBreakerState int
+
+const (
+	StateClosed CircuitBreakerState = iota
+	StateOpen
+	StateHalfOpen
 )
 
 // Upstream represents a single backend replica destination.
@@ -18,6 +27,12 @@ type Upstream struct {
 	unhealthy            bool
 	consecutiveFailures  int
 	consecutiveSuccesses int
+
+	// circuit breaker state
+	cbState            CircuitBreakerState
+	cbFailureCount     int
+	cbOpenUntil        time.Time
+	cbHalfOpenRequests int
 }
 
 // Increment increases the active connection counter.
@@ -40,6 +55,101 @@ func (u *Upstream) IsHealthy() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return !u.unhealthy
+}
+
+// IsEligible returns true if the upstream is healthy and not blocked by the circuit breaker.
+func (u *Upstream) IsEligible(cbCfg config.CircuitBreakerConfig) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	// If health checks marked it unhealthy, skip it
+	if u.unhealthy {
+		return false
+	}
+
+	if !cbCfg.Enabled {
+		return true
+	}
+
+	if u.cbState == StateOpen {
+		if time.Now().After(u.cbOpenUntil) {
+			// Transition Open -> Half-Open
+			u.cbState = StateHalfOpen
+			u.cbFailureCount = 0
+			u.cbHalfOpenRequests = 0
+		} else {
+			return false // still blocked
+		}
+	}
+
+	if u.cbState == StateHalfOpen {
+		maxRequests := cbCfg.HalfOpenMaxRequests
+		if maxRequests <= 0 {
+			maxRequests = 1
+		}
+		if u.cbHalfOpenRequests >= maxRequests {
+			return false // throttle trial requests
+		}
+		u.cbHalfOpenRequests++
+	}
+
+	return true
+}
+
+// RecordResult updates the circuit breaker state based on the outcome of a request.
+func (u *Upstream) RecordResult(success bool, cbCfg config.CircuitBreakerConfig) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if !cbCfg.Enabled {
+		return
+	}
+
+	if success {
+		if u.cbState == StateHalfOpen {
+			// Success in Half-Open transitions back to Closed
+			u.cbState = StateClosed
+			u.cbFailureCount = 0
+			u.cbHalfOpenRequests = 0
+		} else if u.cbState == StateClosed {
+			u.cbFailureCount = 0
+		}
+	} else {
+		// Request failed
+		if u.cbState == StateClosed {
+			u.cbFailureCount++
+			threshold := cbCfg.FailureThreshold
+			if threshold <= 0 {
+				threshold = 5
+			}
+			if u.cbFailureCount >= threshold {
+				u.cbState = StateOpen
+				openTimeout := cbCfg.OpenTimeout
+				if openTimeout <= 0 {
+					openTimeout = 10 * time.Second
+				}
+				u.cbOpenUntil = time.Now().Add(openTimeout)
+			}
+		} else if u.cbState == StateHalfOpen {
+			// Any failure in Half-Open immediately trips back to Open
+			u.cbState = StateOpen
+			openTimeout := cbCfg.OpenTimeout
+			if openTimeout <= 0 {
+				openTimeout = 10 * time.Second
+			}
+			u.cbOpenUntil = time.Now().Add(openTimeout)
+			u.cbHalfOpenRequests = 0
+		}
+	}
+}
+
+// DecrementHalfOpen decreases the active trial request counter if we remain in Half-Open.
+func (u *Upstream) DecrementHalfOpen() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.cbState == StateHalfOpen && u.cbHalfOpenRequests > 0 {
+		u.cbHalfOpenRequests--
+	}
 }
 
 // ReportFailure increments consecutive failures. If it crosses the threshold,
@@ -80,6 +190,7 @@ type Service struct {
 	LoadBalancer string
 	Auth         Auth // Service-level authentication policy
 	RateLimit    config.RateLimitConfig
+	Resiliency   config.ResiliencyConfig
 }
 
 type Auth struct {
@@ -123,7 +234,8 @@ func New(cfg *config.Config) (*Registry, error) {
 				Type:             svc.Auth.Type,
 				AllowedConsumers: svc.Auth.AllowedConsumers,
 			},
-			RateLimit: svc.RateLimit,
+			RateLimit:  svc.RateLimit,
+			Resiliency: svc.Resiliency,
 		}
 	}
 

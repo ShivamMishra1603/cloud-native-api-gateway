@@ -78,6 +78,32 @@ type ServiceConfig struct {
 	Upstreams    []UpstreamConfig `yaml:"upstreams"`
 	Auth         AuthConfig       `yaml:"auth,omitempty"`
 	RateLimit    RateLimitConfig  `yaml:"rate_limit,omitempty"`
+	Resiliency   ResiliencyConfig `yaml:"resiliency,omitempty"`
+}
+
+type ResiliencyConfig struct {
+	Timeout        TimeoutConfig        `yaml:"timeout,omitempty"`
+	Retry          RetryConfig          `yaml:"retry,omitempty"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker,omitempty"`
+}
+
+type TimeoutConfig struct {
+	RequestTimeout time.Duration `yaml:"request_timeout,omitempty"`
+}
+
+type RetryConfig struct {
+	Enabled        bool          `yaml:"enabled,omitempty"`
+	MaxAttempts    int           `yaml:"max_attempts,omitempty"`
+	Backoff        time.Duration `yaml:"backoff,omitempty"`
+	StatusCodes    []int         `yaml:"status_codes,omitempty"`
+	AllowedMethods []string      `yaml:"allowed_methods,omitempty"`
+}
+
+type CircuitBreakerConfig struct {
+	Enabled             bool          `yaml:"enabled,omitempty"`
+	FailureThreshold    int           `yaml:"failure_threshold,omitempty"`
+	OpenTimeout         time.Duration `yaml:"open_timeout,omitempty"`
+	HalfOpenMaxRequests int           `yaml:"half_open_max_requests,omitempty"`
 }
 
 type AuthConfig struct {
@@ -256,6 +282,42 @@ func (c *Config) Validate() error {
 	for _, svc := range c.Services {
 		if err := validateRateLimit(svc.RateLimit, fmt.Sprintf("service %q.rate_limit", svc.Name)); err != nil {
 			return err
+		}
+	}
+
+	// Validate and default Resiliency Configurations
+	for i := range c.Services {
+		svc := &c.Services[i]
+
+		if svc.Resiliency.Timeout.RequestTimeout <= 0 {
+			svc.Resiliency.Timeout.RequestTimeout = 5 * time.Second
+		}
+
+		if svc.Resiliency.Retry.Enabled {
+			if svc.Resiliency.Retry.MaxAttempts <= 0 {
+				svc.Resiliency.Retry.MaxAttempts = 3
+			}
+			if svc.Resiliency.Retry.Backoff <= 0 {
+				svc.Resiliency.Retry.Backoff = 100 * time.Millisecond
+			}
+			if len(svc.Resiliency.Retry.StatusCodes) == 0 {
+				svc.Resiliency.Retry.StatusCodes = []int{502, 503, 504}
+			}
+			if len(svc.Resiliency.Retry.AllowedMethods) == 0 {
+				svc.Resiliency.Retry.AllowedMethods = []string{"GET", "HEAD", "OPTIONS"}
+			}
+		}
+
+		if svc.Resiliency.CircuitBreaker.Enabled {
+			if svc.Resiliency.CircuitBreaker.FailureThreshold <= 0 {
+				svc.Resiliency.CircuitBreaker.FailureThreshold = 5
+			}
+			if svc.Resiliency.CircuitBreaker.OpenTimeout <= 0 {
+				svc.Resiliency.CircuitBreaker.OpenTimeout = 10 * time.Second
+			}
+			if svc.Resiliency.CircuitBreaker.HalfOpenMaxRequests <= 0 {
+				svc.Resiliency.CircuitBreaker.HalfOpenMaxRequests = 1
+			}
 		}
 	}
 
