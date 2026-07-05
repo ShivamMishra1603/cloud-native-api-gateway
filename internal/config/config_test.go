@@ -326,6 +326,121 @@ func TestConfigValidateErrors(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "api key enabled globally but no keys configured",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				Authentication: AuthenticationConfig{
+					APIKey: APIKeyConfig{
+						Enabled: true,
+						Keys:    nil,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "service auth enabled but global api key disabled",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Auth: AuthConfig{
+							Enabled: true,
+							Type:    "api_key",
+						},
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				Authentication: AuthenticationConfig{
+					APIKey: APIKeyConfig{
+						Enabled: false,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "jwt enabled globally but no public key configured",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				Authentication: AuthenticationConfig{
+					JWT: JWTConfig{
+						Enabled:   true,
+						PublicKey: "",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "service jwt enabled but global jwt disabled",
+			cfg: Config{
+				Gateway: GatewayConfig{
+					Port:         8080,
+					ReadTimeout:  time.Second,
+					WriteTimeout: time.Second,
+					IdleTimeout:  time.Second,
+				},
+				Services: []ServiceConfig{
+					{
+						Name: "test-service",
+						Auth: AuthConfig{
+							Enabled: true,
+							Type:    "jwt",
+						},
+						Routes: []RouteConfig{
+							{Path: "/test/*"},
+						},
+						Upstreams: []UpstreamConfig{{URL: "http://localhost:8081"}},
+					},
+				},
+				Authentication: AuthenticationConfig{
+					JWT: JWTConfig{
+						Enabled:   false,
+						PublicKey: "./keys/pub.pem",
+					},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

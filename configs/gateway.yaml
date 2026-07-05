@@ -30,3 +30,16 @@ health_checks:
   path: /healthz
   failure_threshold: 3
   success_threshold: 2
+
+authentication:
+  api_key:
+    enabled: true
+    header: X-API-Key
+    keys:
+      - key: alice-secret-key
+        consumer: alice
+      - key: bob-secret-key
+        consumer: bob
+  jwt:
+    enabled: true
+    public_key: ./keys/public.pem

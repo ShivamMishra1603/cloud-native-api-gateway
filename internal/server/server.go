@@ -1,11 +1,17 @@
 package server
 
 import (
+	"crypto"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/loadbalancer"
@@ -30,6 +36,27 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 
 	// Initialize the Router
 	r := router.New(cfg)
+
+	// Load global JWT public key if enabled
+	var jwtPublicKey crypto.PublicKey
+	if cfg.Authentication.JWT.Enabled {
+		keyBytes, err := os.ReadFile(cfg.Authentication.JWT.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("read jwt public key PEM file: %w", err)
+		}
+		block, _ := pem.Decode(keyBytes)
+		if block == nil {
+			return nil, fmt.Errorf("failed to decode PEM block from jwt public key")
+		}
+		pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			pubKey, err = x509.ParsePKCS1PublicKey(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse jwt public key: %w", err)
+			}
+		}
+		jwtPublicKey = pubKey
+	}
 
 	// Build a map of service name -> proxy handler
 	proxies := make(map[string]*proxy.ProxyHandler)
@@ -65,12 +92,129 @@ func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 			return
 		}
 
+		regSvc, ok := reg.GetService(matched.ServiceName)
+		if !ok {
+			slog.Error("matched service not found in registry", "service", matched.ServiceName)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("500 Internal Server Error\n"))
+			return
+		}
+
 		pHandler, ok := proxies[matched.ServiceName]
 		if !ok {
 			slog.Error("matched service proxy not initialized", "service", matched.ServiceName)
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("500 Internal Server Error\n"))
 			return
+		}
+
+		// Apply API Key or JWT Authentication if enabled for this service
+		if regSvc.Auth.Enabled {
+			authType := strings.ToLower(strings.TrimSpace(regSvc.Auth.Type))
+			if authType == "" {
+				authType = "api_key"
+			}
+
+			var consumer string
+			var authenticated bool
+
+			if authType == "api_key" {
+				headerName := cfg.Authentication.APIKey.Header
+				if headerName == "" {
+					headerName = "X-API-Key"
+				}
+
+				apiKey := req.Header.Get(headerName)
+				if apiKey == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - Missing API Key\n"))
+					return
+				}
+
+				// Validate key and identify consumer
+				for _, record := range cfg.Authentication.APIKey.Keys {
+					if record.Key == apiKey {
+						consumer = record.Consumer
+						authenticated = true
+						break
+					}
+				}
+
+				if !authenticated {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - Invalid API Key\n"))
+					return
+				}
+			} else if authType == "jwt" {
+				authHeader := req.Header.Get("Authorization")
+				if authHeader == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - Missing Authorization Header\n"))
+					return
+				}
+
+				if !strings.HasPrefix(authHeader, "Bearer ") {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - Authorization header must start with Bearer\n"))
+					return
+				}
+
+				tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+
+				// Parse and validate token using cached public key
+				token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+					// Verify signing method alg bounds
+					if _, ok := token.Method.(*jwt.SigningMethodRSA); ok {
+						return jwtPublicKey, nil
+					}
+					if _, ok := token.Method.(*jwt.SigningMethodECDSA); ok {
+						return jwtPublicKey, nil
+					}
+					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				})
+
+				if err != nil || !token.Valid {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(fmt.Sprintf("401 Unauthorized - Invalid JWT: %v\n", err)))
+					return
+				}
+
+				claims, ok := token.Claims.(jwt.MapClaims)
+				if !ok {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - Invalid JWT claims\n"))
+					return
+				}
+
+				sub, _ := claims["sub"].(string)
+				if sub == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("401 Unauthorized - JWT sub claim is missing\n"))
+					return
+				}
+
+				consumer = sub
+				authenticated = true
+			}
+
+			// Validate service-level consumer access controls (allowed_consumers)
+			if authenticated && len(regSvc.Auth.AllowedConsumers) > 0 {
+				authorized := false
+				for _, allowed := range regSvc.Auth.AllowedConsumers {
+					if allowed == consumer {
+						authorized = true
+						break
+					}
+				}
+				if !authorized {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte("403 Forbidden - Insufficient permissions\n"))
+					return
+				}
+			}
+
+			// Propagate consumer identification header to downstream upstreams
+			req.Header.Set("X-Consumer", consumer)
 		}
 
 		// Strip prefix if required

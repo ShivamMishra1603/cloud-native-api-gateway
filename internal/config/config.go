@@ -11,10 +11,11 @@ import (
 )
 
 type Config struct {
-	Gateway       GatewayConfig       `yaml:"gateway"`
-	Observability ObservabilityConfig `yaml:"observability"`
-	Services      []ServiceConfig     `yaml:"services"`
-	HealthCheck   HealthCheckConfig   `yaml:"health_checks"`
+	Gateway        GatewayConfig        `yaml:"gateway"`
+	Observability  ObservabilityConfig  `yaml:"observability"`
+	Services       []ServiceConfig      `yaml:"services"`
+	HealthCheck    HealthCheckConfig    `yaml:"health_checks"`
+	Authentication AuthenticationConfig `yaml:"authentication"`
 }
 
 type GatewayConfig struct {
@@ -41,11 +42,39 @@ type HealthCheckConfig struct {
 	SuccessThreshold int           `yaml:"success_threshold"`
 }
 
+type AuthenticationConfig struct {
+	JWT    JWTConfig    `yaml:"jwt"`
+	APIKey APIKeyConfig `yaml:"api_key"`
+}
+
+type JWTConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	PublicKey string `yaml:"public_key"`
+}
+
+type APIKeyConfig struct {
+	Enabled bool           `yaml:"enabled"`
+	Header  string         `yaml:"header"`
+	Keys    []APIKeyRecord `yaml:"keys"`
+}
+
+type APIKeyRecord struct {
+	Key      string `yaml:"key"`
+	Consumer string `yaml:"consumer"`
+}
+
 type ServiceConfig struct {
 	Name         string           `yaml:"name"`
 	LoadBalancer string           `yaml:"load_balancer,omitempty"`
 	Routes       []RouteConfig    `yaml:"routes,omitempty"`
 	Upstreams    []UpstreamConfig `yaml:"upstreams"`
+	Auth         AuthConfig       `yaml:"auth,omitempty"`
+}
+
+type AuthConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	Type             string   `yaml:"type"` // "api_key" or "jwt"
+	AllowedConsumers []string `yaml:"allowed_consumers,omitempty"`
 }
 
 type RouteConfig struct {
@@ -163,6 +192,51 @@ func (c *Config) Validate() error {
 		}
 		if c.HealthCheck.SuccessThreshold <= 0 {
 			c.HealthCheck.SuccessThreshold = 2
+		}
+	}
+
+	// Default and validate Authentication config
+	if c.Authentication.APIKey.Enabled {
+		if strings.TrimSpace(c.Authentication.APIKey.Header) == "" {
+			c.Authentication.APIKey.Header = "X-API-Key"
+		}
+		if len(c.Authentication.APIKey.Keys) == 0 {
+			return fmt.Errorf("api_key authentication is enabled but no keys are configured")
+		}
+		for i, r := range c.Authentication.APIKey.Keys {
+			if strings.TrimSpace(r.Key) == "" {
+				return fmt.Errorf("authentication.api_key.keys[%d].key cannot be empty", i)
+			}
+			if strings.TrimSpace(r.Consumer) == "" {
+				return fmt.Errorf("authentication.api_key.keys[%d].consumer cannot be empty", i)
+			}
+		}
+	}
+
+	if c.Authentication.JWT.Enabled {
+		if strings.TrimSpace(c.Authentication.JWT.PublicKey) == "" {
+			return fmt.Errorf("jwt authentication is enabled but public_key file path is not configured")
+		}
+	}
+
+	// Validate service-level authentication settings
+	for _, svc := range c.Services {
+		if svc.Auth.Enabled {
+			t := strings.ToLower(strings.TrimSpace(svc.Auth.Type))
+			if t == "" {
+				t = "api_key"
+			}
+			if t != "api_key" && t != "jwt" {
+				return fmt.Errorf("service %q has invalid auth.type: %q", svc.Name, svc.Auth.Type)
+			}
+
+			if t == "api_key" && !c.Authentication.APIKey.Enabled {
+				return fmt.Errorf("service %q requires api_key authentication but global api_key authentication is disabled", svc.Name)
+			}
+
+			if t == "jwt" && !c.Authentication.JWT.Enabled {
+				return fmt.Errorf("service %q requires jwt authentication but global jwt authentication is disabled", svc.Name)
+			}
 		}
 	}
 

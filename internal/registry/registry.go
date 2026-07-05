@@ -79,6 +79,13 @@ type Service struct {
 	Name         string
 	Upstreams    []*Upstream
 	LoadBalancer string
+	Auth         Auth // Service-level authentication policy
+}
+
+type Auth struct {
+	Enabled          bool
+	Type             string
+	AllowedConsumers []string
 }
 
 // Registry maintains service configuration maps.
@@ -111,6 +118,11 @@ func New(cfg *config.Config) (*Registry, error) {
 			Name:         svc.Name,
 			Upstreams:    upstreams,
 			LoadBalancer: lb,
+			Auth: Auth{
+				Enabled:          svc.Auth.Enabled,
+				Type:             svc.Auth.Type,
+				AllowedConsumers: svc.Auth.AllowedConsumers,
+			},
 		}
 	}
 
