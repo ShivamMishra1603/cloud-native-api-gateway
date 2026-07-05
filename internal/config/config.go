@@ -14,6 +14,7 @@ type Config struct {
 	Gateway       GatewayConfig       `yaml:"gateway"`
 	Observability ObservabilityConfig `yaml:"observability"`
 	Services      []ServiceConfig     `yaml:"services"`
+	HealthCheck   HealthCheckConfig   `yaml:"health_checks"`
 }
 
 type GatewayConfig struct {
@@ -29,6 +30,15 @@ type ObservabilityConfig struct {
 
 type LoggingConfig struct {
 	Level string `yaml:"level"`
+}
+
+type HealthCheckConfig struct {
+	Enabled          bool          `yaml:"enabled"`
+	Interval         time.Duration `yaml:"interval"`
+	Timeout          time.Duration `yaml:"timeout"`
+	Path             string        `yaml:"path"`
+	FailureThreshold int           `yaml:"failure_threshold"`
+	SuccessThreshold int           `yaml:"success_threshold"`
 }
 
 type ServiceConfig struct {
@@ -133,6 +143,26 @@ func (c *Config) Validate() error {
 			if parsed.Host == "" {
 				return fmt.Errorf("service %q upstream[%d].url must specify a host", svc.Name, j)
 			}
+		}
+	}
+
+	if c.HealthCheck.Enabled {
+		if c.HealthCheck.Interval <= 0 {
+			c.HealthCheck.Interval = 10 * time.Second
+		}
+		if c.HealthCheck.Timeout <= 0 {
+			c.HealthCheck.Timeout = 2 * time.Second
+		}
+		if strings.TrimSpace(c.HealthCheck.Path) == "" {
+			c.HealthCheck.Path = "/healthz"
+		} else if !strings.HasPrefix(c.HealthCheck.Path, "/") {
+			return fmt.Errorf("health_checks.path %q must start with '/'", c.HealthCheck.Path)
+		}
+		if c.HealthCheck.FailureThreshold <= 0 {
+			c.HealthCheck.FailureThreshold = 3
+		}
+		if c.HealthCheck.SuccessThreshold <= 0 {
+			c.HealthCheck.SuccessThreshold = 2
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/server"
 )
 
@@ -62,8 +63,13 @@ func TestRoutingIntegration(t *testing.T) {
 		},
 	}
 
+	reg, err := registry.New(cfg)
+	if err != nil {
+		t.Fatalf("failed to initialize registry: %v", err)
+	}
+
 	// 4. Start the API Gateway
-	gwSrv, err := server.New(cfg)
+	gwSrv, err := server.New(cfg, reg)
 	if err != nil {
 		t.Fatalf("failed to initialize gateway server: %v", err)
 	}

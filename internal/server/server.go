@@ -14,7 +14,7 @@ import (
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/router"
 )
 
-func New(cfg *config.Config) (*http.Server, error) {
+func New(cfg *config.Config, reg *registry.Registry) (*http.Server, error) {
 	mux := http.NewServeMux()
 
 	// Internal health check endpoint
@@ -30,12 +30,6 @@ func New(cfg *config.Config) (*http.Server, error) {
 
 	// Initialize the Router
 	r := router.New(cfg)
-
-	// Initialize the Service Registry
-	reg, err := registry.New(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create service registry: %w", err)
-	}
 
 	// Build a map of service name -> proxy handler
 	proxies := make(map[string]*proxy.ProxyHandler)

@@ -22,3 +22,11 @@ services:
         strip_prefix: true
     upstreams:
       - url: http://localhost:8082
+
+health_checks:
+  enabled: true
+  interval: 10s
+  timeout: 2s
+  path: /healthz
+  failure_threshold: 3
+  success_threshold: 2

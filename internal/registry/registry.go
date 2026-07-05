@@ -13,6 +13,11 @@ import (
 type Upstream struct {
 	URL            *url.URL
 	activeRequests int64 // private tracker for active connections
+
+	mu                   sync.RWMutex
+	unhealthy            bool
+	consecutiveFailures  int
+	consecutiveSuccesses int
 }
 
 // Increment increases the active connection counter.
@@ -28,6 +33,45 @@ func (u *Upstream) Decrement() {
 // Connections returns the current active connection count.
 func (u *Upstream) Connections() int64 {
 	return atomic.LoadInt64(&u.activeRequests)
+}
+
+// IsHealthy returns true if the upstream is considered healthy.
+func (u *Upstream) IsHealthy() bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return !u.unhealthy
+}
+
+// ReportFailure increments consecutive failures. If it crosses the threshold,
+// the upstream transitions to unhealthy. Returns true if state transitioned.
+func (u *Upstream) ReportFailure(threshold int) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	u.consecutiveSuccesses = 0
+	u.consecutiveFailures++
+
+	if !u.unhealthy && u.consecutiveFailures >= threshold {
+		u.unhealthy = true
+		return true // transitioned
+	}
+	return false
+}
+
+// ReportSuccess increments consecutive successes. If it crosses the threshold,
+// the upstream transitions to healthy. Returns true if state transitioned.
+func (u *Upstream) ReportSuccess(threshold int) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	u.consecutiveFailures = 0
+	u.consecutiveSuccesses++
+
+	if u.unhealthy && u.consecutiveSuccesses >= threshold {
+		u.unhealthy = false
+		return true // transitioned
+	}
+	return false
 }
 
 // Service represents a logical backend service holding a list of upstream replicas.
@@ -82,4 +126,16 @@ func (r *Registry) GetService(name string) (*Service, bool) {
 
 	svc, ok := r.services[name]
 	return svc, ok
+}
+
+// Services returns a slice of all compiled Services, used by the health checker.
+func (r *Registry) Services() []*Service {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var svcs []*Service
+	for _, svc := range r.services {
+		svcs = append(svcs, svc)
+	}
+	return svcs
 }

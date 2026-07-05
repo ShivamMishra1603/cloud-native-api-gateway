@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/config"
+	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/registry"
 	"github.com/ShivamMishra1603/cloud-native-api-gateway/internal/server"
 )
 
@@ -72,7 +73,12 @@ func TestLoadBalancingIntegration(t *testing.T) {
 			},
 		}
 
-		gwSrv, err := server.New(cfg)
+		reg, err := registry.New(cfg)
+		if err != nil {
+			t.Fatalf("failed to create registry: %v", err)
+		}
+
+		gwSrv, err := server.New(cfg, reg)
 		if err != nil {
 			t.Fatalf("failed to create server: %v", err)
 		}
@@ -169,7 +175,12 @@ func TestLoadBalancingIntegration(t *testing.T) {
 			},
 		}
 
-		gwSrv, err := server.New(cfg)
+		reg, err := registry.New(cfg)
+		if err != nil {
+			t.Fatalf("failed to create registry: %v", err)
+		}
+
+		gwSrv, err := server.New(cfg, reg)
 		if err != nil {
 			t.Fatalf("failed to create server: %v", err)
 		}
