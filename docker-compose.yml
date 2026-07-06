@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/gateway.docker.yaml:/app/configs/gateway.yaml
+      - ./configs/keys:/app/configs/keys
+    depends_on:
+      - catalog-1
+      - catalog-2
+      - order-1
+      - order-2
+    restart: unless-stopped
+
+  catalog-1:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.mock
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - SERVICE_NAME=catalog-service-replica-1
+    restart: unless-stopped
+
+  catalog-2:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.mock
+    ports:
+      - "8083:8081"
+    environment:
+      - PORT=8081
+      - SERVICE_NAME=catalog-service-replica-2
+    restart: unless-stopped
+
+  order-1:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.mock
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - SERVICE_NAME=order-service-replica-1
+    restart: unless-stopped
+
+  order-2:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.mock
+    ports:
+      - "8084:8082"
+    environment:
+      - PORT=8082
+      - SERVICE_NAME=order-service-replica-2
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./configs/grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+      - ./configs/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./configs/dashboards/gateway.json:/var/lib/grafana/dashboards/gateway.json
+    restart: unless-stopped

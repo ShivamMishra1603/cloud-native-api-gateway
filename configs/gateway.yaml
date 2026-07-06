@@ -10,18 +10,22 @@ observability:
 
 services:
   - name: catalog-service
+    load_balancer: round_robin
     routes:
       - path: /catalog/*
         strip_prefix: true
     upstreams:
       - url: http://localhost:8081
+      - url: http://localhost:8083
 
   - name: order-service
+    load_balancer: least_connections
     routes:
       - path: /orders/*
         strip_prefix: true
     upstreams:
       - url: http://localhost:8082
+      - url: http://localhost:8084
 
 health_checks:
   enabled: true
@@ -42,4 +46,4 @@ authentication:
         consumer: bob
   jwt:
     enabled: true
-    public_key: ./keys/public.pem
+    public_key: configs/keys/demo-public.pem
