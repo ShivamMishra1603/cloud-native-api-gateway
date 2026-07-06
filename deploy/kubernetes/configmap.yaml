@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: default
+  labels:
+    app: api-gateway
+data:
+  gateway.yaml: |
+    gateway:
+      port: 8080
+      read_timeout: 10s
+      write_timeout: 10s
+      idle_timeout: 60s
+
+    observability:
+      logging:
+        level: info
+
+    services:
+      - name: catalog-service
+        load_balancer: round_robin
+        routes:
+          - path: /catalog/*
+            strip_prefix: true
+        auth:
+          enabled: true
+          type: api_key
+        upstreams:
+          - url: http://catalog-0.catalog:8081
+          - url: http://catalog-1.catalog:8081
+        resiliency:
+          timeouts:
+            request_timeout: 3s
+          retry:
+            enabled: true
+            max_attempts: 3
+            backoff: 50ms
+            status_codes:
+              - 502
+              - 503
+              - 504
+          circuit_breaker:
+            failure_threshold: 3
+            open_timeout: 5s
+
+      - name: order-service
+        load_balancer: least_connections
+        routes:
+          - path: /orders/*
+            strip_prefix: true
+        upstreams:
+          - url: http://order-0.order:8082
+          - url: http://order-1.order:8082
+        resiliency:
+          timeouts:
+            request_timeout: 3s
+          retry:
+            enabled: true
+            max_attempts: 3
+            backoff: 50ms
+            status_codes:
+              - 502
+              - 503
+              - 504
+          circuit_breaker:
+            failure_threshold: 3
+            open_timeout: 5s
+
+    health_checks:
+      enabled: true
+      interval: 5s
+      timeout: 2s
+      path: /healthz
+      failure_threshold: 3
+      success_threshold: 2
+
+    authentication:
+      api_key:
+        enabled: true
+        header: X-API-Key
+        keys:
+          - key: alice-secret-key
+            consumer: alice
+          - key: bob-secret-key
+            consumer: bob
+      jwt:
+        enabled: true
+        public_key: configs/keys/demo-public.pem

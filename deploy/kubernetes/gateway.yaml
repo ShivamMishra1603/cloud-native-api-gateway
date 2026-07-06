@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: default
+  labels:
+    app: gateway
+spec:
+  type: NodePort
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: default
+  labels:
+    app: gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway-pod
+          image: cloud-native-api-gateway-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config-vol
+              mountPath: /app/configs/gateway.yaml
+              subPath: gateway.yaml
+            - name: keys-vol
+              mountPath: /app/configs/keys
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: config-vol
+          configMap:
+            name: gateway-config
+        - name: keys-vol
+          secret:
+            secretName: demo-keys
