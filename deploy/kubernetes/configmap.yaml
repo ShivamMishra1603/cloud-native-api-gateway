@@ -30,7 +30,7 @@ data:
           - url: http://catalog-0.catalog:8081
           - url: http://catalog-1.catalog:8081
         resiliency:
-          timeouts:
+          timeout:
             request_timeout: 3s
           retry:
             enabled: true
@@ -53,7 +53,7 @@ data:
           - url: http://order-0.order:8082
           - url: http://order-1.order:8082
         resiliency:
-          timeouts:
+          timeout:
             request_timeout: 3s
           retry:
             enabled: true
@@ -86,4 +86,4 @@ data:
             consumer: bob
       jwt:
         enabled: true
-        public_key: configs/keys/demo-public.pem
+        public_key: /app/configs/keys/demo-public.pem
